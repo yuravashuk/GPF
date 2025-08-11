@@ -109,3 +109,169 @@ int main()
     glfwTerminate();
     return 0;
 }
+
+/*
+================== geom.vert ==================
+#version 450 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aTexCoord;
+layout(location = 3) in vec3 aTangent;
+layout(location = 4) in vec3 aBitangent;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProjection;
+
+out vec3 FragPos;
+out vec3 Normal;
+out vec2 TexCoord;
+
+void main()
+{
+    FragPos = vec3(uModel * vec4(aPos, 1.0));
+    Normal = mat3(transpose(inverse(uModel))) * aNormal;
+    TexCoord = aTexCoord;
+    gl_Position = uProjection * uView * vec4(FragPos, 1.0);
+}
+================================================
+*/
+
+/*
+================== geom.frag ==================
+#version 450 core
+layout(location = 0) out vec3 gPosition;
+layout(location = 1) out vec3 gNormal;
+layout(location = 2) out vec4 gAlbedoMetallic;
+layout(location = 3) out vec2 gRoughAO; // optional
+
+in vec3 FragPos;
+in vec3 Normal;
+in vec2 TexCoord;
+
+uniform sampler2D uAlbedoMap;
+uniform sampler2D uMetallicMap;
+uniform sampler2D uRoughnessMap;
+uniform sampler2D uAOMap;
+
+void main()
+{
+    gPosition = FragPos;
+    gNormal = normalize(Normal);
+    vec3 albedo = texture(uAlbedoMap, TexCoord).rgb;
+    float metallic = texture(uMetallicMap, TexCoord).r;
+    float roughness = texture(uRoughnessMap, TexCoord).r;
+    float ao = texture(uAOMap, TexCoord).r;
+    gAlbedoMetallic = vec4(albedo, metallic);
+    gRoughAO = vec2(roughness, ao);
+}
+================================================
+*/
+
+/*
+================== light.vert ==================
+#version 450 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aTexCoord;
+out vec2 TexCoord;
+void main()
+{
+    TexCoord = aTexCoord;
+    gl_Position = vec4(aPos, 1.0);
+}
+================================================
+*/
+
+/*
+================== light.frag ==================
+#version 450 core
+out vec4 FragColor;
+in vec2 TexCoord;
+
+uniform sampler2D gPosition;
+uniform sampler2D gNormal;
+uniform sampler2D gAlbedoMetallic;
+uniform sampler2D gRoughAO;
+
+uniform vec3 camPos;
+uniform vec3 lightPos;
+uniform vec3 lightColor;
+
+// PBR helpers
+const float PI = 3.14159265359;
+
+float DistributionGGX(vec3 N, vec3 H, float roughness)
+{
+    float a = roughness*roughness;
+    float a2 = a*a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH*NdotH;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    return a2 / (PI * denom * denom);
+}
+
+float GeometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = (roughness + 1.0);
+    float k = (r*r) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx1 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx2 = GeometrySchlickGGX(NdotL, roughness);
+    return ggx1 * ggx2;
+}
+
+vec3 fresnelSchlick(float cosTheta, vec3 F0)
+{
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+void main()
+{
+    vec3 FragPos = texture(gPosition, TexCoord).rgb;
+    vec3 Normal = normalize(texture(gNormal, TexCoord).rgb);
+    vec3 albedo = pow(texture(gAlbedoMetallic, TexCoord).rgb, vec3(2.2)); // gamma->linear
+    float metallic = texture(gAlbedoMetallic, TexCoord).a;
+    float roughness = texture(gRoughAO, TexCoord).r;
+    float ao = texture(gRoughAO, TexCoord).g;
+
+    vec3 V = normalize(camPos - FragPos);
+    vec3 L = normalize(lightPos - FragPos);
+    vec3 H = normalize(V + L);
+    float distance = length(lightPos - FragPos);
+    float attenuation = 1.0 / (distance*distance);
+    vec3 radiance = lightColor * attenuation;
+
+    // base reflectivity
+    vec3 F0 = vec3(0.04);
+    F0 = mix(F0, albedo, metallic);
+
+    float NDF = DistributionGGX(Normal, H, roughness);
+    float G   = GeometrySmith(Normal, V, L, roughness);
+    vec3  F   = fresnelSchlick(max(dot(H, V), 0.0), F0);
+
+    vec3 numerator = NDF * G * F;
+    float denom = 4.0 * max(dot(Normal, V), 0.0) * max(dot(Normal, L), 0.0) + 0.001;
+    vec3 specular = numerator / denom;
+
+    vec3 kS = F;
+    vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+
+    float NdotL = max(dot(Normal, L), 0.0);
+    vec3 Lo = (kD * albedo / PI + specular) * radiance * NdotL;
+
+    vec3 ambient = vec3(0.03) * albedo * ao;
+    vec3 color = ambient + Lo;
+
+    color = color / (color + vec3(1.0)); // tone map
+    color = pow(color, vec3(1.0/2.2));   // gamma correct
+
+    FragColor = vec4(color, 1.0);
+}
+================================================
+*/
